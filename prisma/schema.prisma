@@ -1,0 +1,81 @@
+// Prisma schema for the PM 360 assessment tool.
+//
+// LOCAL DEV / TESTING: uses SQLite (see datasource below) so it can be
+// verified end-to-end without any external services.
+//
+// PRODUCTION: change `provider = "sqlite"` to `provider = "postgresql"` and
+// set DATABASE_URL to a real Postgres connection string (e.g. from Vercel
+// Postgres or Neon — see DEPLOY.md). No other schema changes are needed;
+// Json fields work identically on both.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// A single row holding org-wide settings that aren't tied to one assessment
+// (currently just the customizable default rater-group weights).
+model GlobalSettings {
+  id      Int    @id @default(1)
+  weights Json // { Manager, Director, CPO, Peer, Report, Stakeholder } as 0..1 fractions
+}
+
+// Login accounts. "admin" can see/create everything. "viewer" can only see
+// the report of the one assessment they've been assigned to (read-only —
+// no creating assessments, no managing raters). This is separate from
+// Rater — a Rater never logs in, they use their unique link.
+model User {
+  id           String   @id @default(cuid())
+  username     String   @unique
+  passwordHash String
+  role         String   // "admin" | "viewer"
+  createdAt    DateTime @default(now())
+
+  assignedAssessmentId String?
+  assignedAssessment   Assessment? @relation(fields: [assignedAssessmentId], references: [id], onDelete: SetNull)
+}
+
+model Assessment {
+  id             String   @id @default(cuid())
+  subjectName    String
+  currentLevel   String? // "Junior" | "Mid" | "Senior" | "Lead" | "Director" | null
+  expectedLevel  String? // target level for promotion-mode assessments, or null for exploratory
+  questionScope  String? // "defining" | "defining_plus_devplan" | null
+  customWeights  Json? // per-assessment override of GlobalSettings.weights, or null to use the default
+  createdAt      DateTime @default(now())
+  createdBy      String? // free-text name of whoever created it (kept for display only, not used for auth)
+
+  raters      Rater[]
+  submissions Submission[]
+  viewers     User[] // users who were granted read-only access to just this assessment
+}
+
+model Rater {
+  id            String   @id @default(cuid())
+  assessmentId  String
+  assessment    Assessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+  name          String?
+  role          String   // "Self" | "Manager" | "Director" | "CPO" | "Peer" | "Report" | "Stakeholder"
+  inviteToken   String   @unique @default(cuid())
+  status        String   @default("pending") // "pending" | "completed"
+
+  submission Submission?
+
+  @@index([assessmentId])
+}
+
+model Submission {
+  id           String   @id @default(cuid())
+  assessmentId String
+  assessment   Assessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+  raterId      String   @unique
+  rater        Rater    @relation(fields: [raterId], references: [id], onDelete: Cascade)
+  responses    Json     // [{ subSkillId, selectedLevels: string[] | null, comment: string }]
+  submittedAt  DateTime @default(now())
+
+  @@index([assessmentId])
+}
